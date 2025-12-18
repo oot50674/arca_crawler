@@ -1,5 +1,5 @@
 # Arca Crawler
-<img width="1444" height="1279" alt="image" src="https://github.com/user-attachments/assets/eb5f43ce-c208-4662-91f6-574d6d1f2b0b" />
+<img width="2489" height="1626" alt="image" src="https://github.com/user-attachments/assets/92c77681-430a-49d8-a3e6-755a27f373dd" />
 
 아카라이브 채널 글과 이미지를 백업해 오프라인 HTML로 저장하는 프로젝트입니다.
 
