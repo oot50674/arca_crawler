@@ -1,6 +1,8 @@
 import json
 from datetime import datetime
 from pathlib import Path
+import threading
+from queue import SimpleQueue
 
 from flask import Blueprint, current_app, render_template, request, Response, stream_with_context
 import logging
@@ -173,31 +175,53 @@ def run_backup_sse():
 
     @stream_with_context
     def generate():
-        def callback(msg):
-            # SSE format: data: <content>\n\n
-            # We wrap it in a div for easy display
-            yield f"data: <div class='py-1 border-b border-gray-700 text-sm'>{msg}</div>\n\n"
+        q: SimpleQueue = SimpleQueue()
+        done = object()
+        result_holder = {}
 
-        try:
-            yield "data: <div class='font-bold text-blue-400'>[시스템] 백업 프로세스를 시작합니다...</div>\n\n"
-            result = backup_channel(config, progress_callback=callback)
-            
-            summary = f"""
+        def callback(msg: str):
+            q.put({"type": "log", "msg": msg})
+
+        def worker():
+            try:
+                res = backup_channel(config, progress_callback=callback)
+                result_holder["res"] = res
+                q.put({"type": "summary"})
+            except Exception as exc:  # pragma: no cover - runtime safety
+                q.put({"type": "error", "msg": str(exc)})
+            finally:
+                q.put(done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        # initial notice
+        yield "data: <div class='font-bold text-blue-400'>[시스템] 백업 프로세스를 시작합니다...</div>\n\n"
+
+        while True:
+            item = q.get()
+            if item is done:
+                break
+
+            if item.get("type") == "log":
+                yield f"data: <div class='py-1 border-b border-gray-700 text-sm'>{item['msg']}</div>\n\n"
+            elif item.get("type") == "error":
+                yield f"data: <div class='font-bold text-red-400'>[오류] {item.get('msg','')}</div>\n\n"
+            elif item.get("type") == "summary":
+                res = result_holder.get("res")
+                if res:
+                    summary = f"""
 <div class='mt-4 p-3 bg-slate-800 rounded border border-emerald-900/50'>
     <div class='font-bold text-emerald-400 mb-1'>[백업 완료 리포트]</div>
     <div class='grid grid-cols-2 gap-x-4 gap-y-1 text-xs'>
-        <span class='text-slate-400'>저장된 게시글:</span> <span class='text-slate-200'>{result.posts_saved}개</span>
-        <span class='text-slate-400'>다운로드 이미지:</span> <span class='text-slate-200'>{result.images_downloaded}개</span>
-        <span class='text-slate-400'>소요 시간:</span> <span class='text-slate-200'>{result.duration:.1f}초</span>
-        <span class='text-slate-400'>발생 에러:</span> <span class='text-{"red-400" if result.errors else "slate-200"}'>{len(result.errors)}건</span>
+        <span class='text-slate-400'>저장된 게시글:</span> <span class='text-slate-200'>{res.posts_saved}개</span>
+        <span class='text-slate-400'>다운로드 이미지:</span> <span class='text-slate-200'>{res.images_downloaded}개</span>
+        <span class='text-slate-400'>소요 시간:</span> <span class='text-slate-200'>{res.duration:.1f}초</span>
+        <span class='text-slate-400'>발생 에러:</span> <span class='text-{"red-400" if res.errors else "slate-200"}'>{len(res.errors)}건</span>
     </div>
 </div>
 """
-            yield f"data: {summary.replace(chr(10), '')}\n\n"
-            yield "data: <div class='font-bold text-green-400 mt-2'>[시스템] 모든 작업이 완료되었습니다.</div>\n\n"
-            # Trigger a refresh of the run list on the client side
-            yield "data: <script>htmx.trigger('#run-history', 'refresh-runs')</script>\n\n"
-        except Exception as e:
-            yield f"data: <div class='font-bold text-red-400'>[오류] {str(e)}</div>\n\n"
+                    yield f"data: {summary.replace(chr(10), '')}\n\n"
+                yield "data: <div class='font-bold text-green-400 mt-2'>[시스템] 모든 작업이 완료되었습니다.</div>\n\n"
+                yield "data: <script>htmx.trigger('#run-history', 'refresh-runs')</script>\n\n"
 
     return Response(generate(), mimetype='text/event-stream')

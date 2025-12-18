@@ -7,6 +7,7 @@ import re
 import time
 import asyncio
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -876,13 +877,23 @@ def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult
         image_urls = extract_image_urls(content_html, base_url=post_url)
         url_to_local: Dict[str, str] = {}
 
-        for url in image_urls:
-            try:
-                data_url = download_as_data_url(url, referer=post_url, session=session)
-                url_to_local[url] = data_url
-                images_downloaded += 1
-            except Exception as exc:  # pragma: no cover - network-dependent
-                errors.append(f"[{aid}] 이미지 다운로드 실패: {url} ({exc})")
+        if image_urls:
+            # 최대 동시 다운로드 수를 제한하여 과도한 연결을 방지
+            max_workers = min(8, max(2, len(image_urls)))
+
+            def download_one(target_url: str):
+                data_url = download_as_data_url(target_url, referer=post_url, session=session)
+                return target_url, data_url
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(download_one, url): url for url in image_urls}
+                for future in futures:
+                    try:
+                        url, data_url = future.result()
+                        url_to_local[url] = data_url
+                        images_downloaded += 1
+                    except Exception as exc:  # pragma: no cover - network-dependent
+                        errors.append(f"[{aid}] 이미지 다운로드 실패: {futures[future]} ({exc})")
 
         rewritten = ""
         if content_html:
