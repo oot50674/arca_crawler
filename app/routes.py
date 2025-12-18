@@ -49,6 +49,7 @@ def _format_summary_html(res) -> str:
         "<div class='grid grid-cols-2 gap-x-4 gap-y-1 text-xs'>"
         f"<span class='text-slate-400'>저장된 게시글:</span> <span class='text-slate-200'>{res.posts_saved}개</span>"
         f"<span class='text-slate-400'>다운로드 이미지:</span> <span class='text-slate-200'>{res.images_downloaded}개</span>"
+        f"<span class='text-slate-400'>다운로드 비디오:</span> <span class='text-slate-200'>{getattr(res, 'videos_downloaded', 0)}개</span>"
         f"<span class='text-slate-400'>소요 시간:</span> <span class='text-slate-200'>{res.duration:.1f}초</span>"
         f"<span class='text-slate-400'>발생 에러:</span> <span class='text-{'red-400' if res.errors else 'slate-200'}'>{len(res.errors)}건</span>"
         "</div>"

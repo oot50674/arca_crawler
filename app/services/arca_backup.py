@@ -17,6 +17,7 @@ import requests
 from bs4 import BeautifulSoup
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+VIDEO_EXTS = (".mp4", ".webm", ".ogg", ".mov", ".mkv")
 BASE_URL = "https://arca.live/"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -206,6 +207,43 @@ def extract_image_urls(html: str, base_url: str) -> List[str]:
     return deduped
 
 
+def extract_video_urls(html: str, base_url: str) -> List[str]:
+    soup = BeautifulSoup(html or "", "lxml")
+    urls: List[str] = []
+
+    for video in soup.find_all("video"):
+        src = (
+            video.get("data-originalurl")
+            or video.get("src")
+            or video.get("data-src")
+            or video.get("data-original")
+        )
+        if src:
+            urls.append(urljoin(base_url, src))
+        for source in video.find_all("source"):
+            s = source.get("src") or source.get("data-src") or source.get("data-original")
+            if s:
+                urls.append(urljoin(base_url, s))
+
+    for anchor in soup.find_all("a"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        full = urljoin(base_url, href)
+        path = urlparse(full).path.lower()
+        if any(path.endswith(ext) for ext in VIDEO_EXTS):
+            urls.append(full)
+
+    deduped: List[str] = []
+    seen = set()
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append(url)
+    return deduped
+
+
 def download_as_data_url(url: str, referer: str, session: requests.Session) -> str:
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
@@ -220,6 +258,22 @@ def download_as_data_url(url: str, referer: str, session: requests.Session) -> s
     data = b"".join(response.iter_content(chunk_size=1024 * 256))
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
+
+
+def download_file(url: str, referer: str, session: requests.Session, dest: Path) -> Path:
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": referer,
+    }
+    response = session.get(url, headers=headers, stream=True, timeout=60)
+    response.raise_for_status()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "wb") as handle:
+        for chunk in response.iter_content(chunk_size=1024 * 512):
+            if not chunk:
+                continue
+            handle.write(chunk)
+    return dest
 
 
 def build_channel_url(channel: str, category: str, page: int) -> str:
@@ -677,6 +731,7 @@ class BackupResult:
     pages_processed: int
     posts_saved: int
     images_downloaded: int
+    videos_downloaded: int
     duration: float
     started_at: float
     finished_at: float
@@ -700,6 +755,7 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
     errors: List[str] = []
     posts_saved = 0
     images_downloaded = 0
+    videos_downloaded = 0
     pages_processed = 0
     page_listings: List[Dict[str, Any]] = []
     all_ids: List[int] = []
@@ -887,7 +943,9 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
             json.dump(article, handle, ensure_ascii=False, indent=2)
 
         image_urls = extract_image_urls(content_html, base_url=post_url)
+        video_urls = extract_video_urls(content_html, base_url=post_url)
         url_to_local: Dict[str, str] = {}
+        video_to_local: Dict[str, str] = {}
 
         if image_urls and not should_stop():
             # 최대 동시 다운로드 수를 제한하여 과도한 연결을 방지
@@ -909,6 +967,33 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                         images_downloaded += 1
                     except Exception as exc:  # pragma: no cover - network-dependent
                         errors.append(f"[{aid}] 이미지 다운로드 실패: {futures[future]} ({exc})")
+
+        if video_urls and not should_stop():
+            max_workers = min(3, max(1, len(video_urls)))
+            videos_dir = post_dir / "videos"
+
+            def download_video(target_url: str):
+                parsed = urlparse(target_url)
+                name = Path(parsed.path).name or "video.mp4"
+                safe_name = safe_filename(name)
+                if not any(safe_name.lower().endswith(ext) for ext in VIDEO_EXTS):
+                    safe_name = f"{safe_name or 'video'}.mp4"
+                dest = videos_dir / safe_name
+                download_file(target_url, referer=post_url, session=session, dest=dest)
+                return target_url, dest.name
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(download_video, url): url for url in video_urls}
+                for future in futures:
+                    if should_stop():
+                        log_progress("중지 요청을 감지했습니다. 비디오 다운로드를 중단합니다.")
+                        break
+                    try:
+                        url, local_name = future.result()
+                        video_to_local[url] = f"videos/{local_name}"
+                        videos_downloaded += 1
+                    except Exception as exc:  # pragma: no cover - network-dependent
+                        errors.append(f"[{aid}] 비디오 다운로드 실패: {futures[future]} ({exc})")
 
         if should_stop():
             log_progress("중지 요청을 감지했습니다. 게시물 저장을 중단합니다.")
@@ -934,6 +1019,30 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                     for key in ("data-src", "data-original"):
                         if key in img.attrs:
                             del img.attrs[key]
+
+            for video in soup.find_all("video"):
+                v_src = (
+                    video.get("data-originalurl")
+                    or video.get("src")
+                    or video.get("data-src")
+                    or video.get("data-original")
+                )
+                if v_src:
+                    full = urljoin(post_url, v_src)
+                    if full in video_to_local:
+                        video["src"] = video_to_local[full]
+                for key in ("data-originalurl", "data-src", "data-original"):
+                    if key in video.attrs:
+                        del video.attrs[key]
+                for source in video.find_all("source"):
+                    s = source.get("src") or source.get("data-src") or source.get("data-original")
+                    if s:
+                        full = urljoin(post_url, s)
+                        if full in video_to_local:
+                            source["src"] = video_to_local[full]
+                    for key in ("data-src", "data-original"):
+                        if key in source.attrs:
+                            del source.attrs[key]
             rewritten = str(soup)
 
         offline_html = f"""<!doctype html>
@@ -968,6 +1077,8 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                 "dir": post_dir.name,
                 "images": len(image_urls),
                 "downloaded_images": len(url_to_local),
+                "videos": len(video_urls),
+                "downloaded_videos": len(video_to_local),
             }
         )
         posts_saved += 1
@@ -990,6 +1101,7 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         "finished_at": finished_at,
         "posts_saved": posts_saved,
         "images_downloaded": images_downloaded,
+        "videos_downloaded": videos_downloaded,
         "pages_processed": pages_processed,
         "errors": len(errors),
     }
@@ -1008,6 +1120,7 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         pages_processed=pages_processed,
         posts_saved=posts_saved,
         images_downloaded=images_downloaded,
+        videos_downloaded=videos_downloaded,
         duration=finished_at - started_at,
         started_at=started_at,
         finished_at=finished_at,
