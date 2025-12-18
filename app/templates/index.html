@@ -44,7 +44,8 @@
                     </label>
                     <label class="flex flex-col gap-1 text-sm text-slate-700" for="input-end-page">
                         <span class="font-semibold">마지막 페이지</span>
-                        <input id="input-end-page" name="end_page" type="number" min="1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.end_page }}" required>
+                        <input id="input-end-page" name="end_page" type="number" min="1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.end_page }}" placeholder="비우면 마지막 페이지까지">
+                        <span class="text-xs text-slate-500">비워두면 마지막 페이지까지 자동으로 탐색합니다.</span>
                     </label>
                 </div>
 

@@ -256,7 +256,10 @@ def run_backup():
     channel = (form.get("channel") or "").strip() or "3d3d"
     category = (form.get("category") or "").strip()
     start_page = _parse_int(form.get("start_page"), 1, 1)
-    end_page = _parse_int(form.get("end_page"), start_page, 1)
+    raw_end_page = form.get("end_page")
+    end_page = None
+    if raw_end_page is not None and raw_end_page.strip() != "":
+        end_page = _parse_int(raw_end_page, start_page, 1)
     sleep = _parse_float(form.get("sleep"), 0.8, minimum=0.0, maximum=5.0)
     out_name = (form.get("out_name") or "").strip()
 
@@ -264,7 +267,7 @@ def run_backup():
         "channel": channel,
         "category": category,
         "start_page": start_page,
-        "end_page": end_page,
+        "end_page": "" if end_page is None else end_page,
         "sleep": sleep,
         "out_name": out_name
     })

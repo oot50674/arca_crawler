@@ -10,8 +10,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
-from urllib.parse import urlencode, urljoin, urlparse
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from urllib.parse import urlencode, urljoin, urlparse, parse_qs, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -37,6 +37,31 @@ def env_bool(name: str, default: bool) -> bool:
 def env_str(name: str, default: str = "") -> str:
     raw = os.environ.get(name)
     return raw if raw is not None else default
+
+
+def _load_cookies_to_session(session: requests.Session, state_path: str) -> None:
+    """storage_state.json 쿠키를 requests 세션에 동기화한다."""
+    if not state_path or not os.path.exists(state_path):
+        return
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        cookies = data.get("cookies", []) if isinstance(data, dict) else []
+        loaded = 0
+        for c in cookies:
+            try:
+                session.cookies.set(
+                    c.get("name"),
+                    c.get("value"),
+                    domain=c.get("domain"),
+                    path=c.get("path"),
+                )
+                loaded += 1
+            except Exception:
+                continue
+        logger.info("Playwright 쿠키 %s개를 requests 세션에 적용했습니다.", loaded)
+    except Exception as exc:
+        logger.warning("쿠키 로드 실패: %s", exc)
 
 
 def _run_playwright_job(job):
@@ -183,19 +208,26 @@ def extract_image_urls(html: str, base_url: str) -> List[str]:
     urls: List[str] = []
 
     for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or img.get("data-original")
+        src = img.get("src")
+        if not src or src.startswith("data:"):
+            src = img.get("data-src") or img.get("data-original")
         if not src:
             continue
-        urls.append(urljoin(base_url, src))
 
-    for anchor in soup.find_all("a"):
-        href = anchor.get("href")
-        if not href:
-            continue
-        full = urljoin(base_url, href)
-        path = urlparse(full).path.lower()
-        if any(path.endswith(ext) for ext in IMAGE_EXTS):
-            urls.append(full)
+        full_url = urljoin(base_url, src)
+
+        # 무거운 원본(type=orig) 파라미터는 제거하여 경량 이미지로 요청
+        try:
+            parsed = urlparse(full_url)
+            qs = parse_qs(parsed.query)
+            if "type" in qs and "orig" in qs["type"]:
+                qs.pop("type", None)
+                new_query = urlencode(qs, doseq=True)
+                full_url = urlunparse(parsed._replace(query=new_query))
+        except Exception:
+            pass
+
+        urls.append(full_url)
 
     deduped: List[str] = []
     seen = set()
@@ -288,6 +320,45 @@ def build_article_url(channel: str, aid: int) -> str:
     return urljoin(BASE_URL, f"b/{channel}/{aid}")
 
 
+def extract_last_page_number(soup: BeautifulSoup, listing_url: str, channel: str) -> Optional[int]:
+    max_page = None
+    base_path = f"/b/{channel}".lower()
+
+    for anchor in soup.find_all("a"):
+        href = anchor.get("href") or ""
+        if not href:
+            continue
+        try:
+            full_href = urljoin(listing_url, href)
+            parsed = urlparse(full_href)
+        except Exception:
+            continue
+
+        path = (parsed.path or "").lower()
+        if base_path not in path:
+            continue
+
+        candidates: List[str] = []
+        data_page = anchor.get("data-page")
+        if data_page is not None:
+            candidates.append(str(data_page))
+
+        qs = parse_qs(parsed.query)
+        candidates.extend(qs.get("p") or [])
+
+        for cand in candidates:
+            try:
+                page_num = int(str(cand))
+            except (TypeError, ValueError):
+                continue
+            if page_num < 1:
+                continue
+            if max_page is None or page_num > max_page:
+                max_page = page_num
+
+    return max_page
+
+
 class PlaywrightListingClient:
     def __init__(self, headless: bool = True, timeout_ms: int = 30_000, storage_state: str = ""):
         self.headless = headless
@@ -361,7 +432,7 @@ class PlaywrightListingClient:
 
     def collect_article_ids(
         self, channel: str, category: str, page: int, debug_dir: Optional[Path] = None
-    ) -> List[int]:
+    ) -> Tuple[List[int], Optional[int]]:
         self._ensure_started()
 
         if self._page is None:
@@ -372,6 +443,7 @@ class PlaywrightListingClient:
         response_events: List[Dict[str, Any]] = []
         error_events: List[Dict[str, Any]] = []
         json_ids: Set[int] = set()
+        last_page_detected: Optional[int] = None
 
         def on_request(req):  # pragma: no cover - network-dependent
             try:
@@ -459,10 +531,17 @@ class PlaywrightListingClient:
                         if m:
                             ids.append(int(m.group(1)))
                 ids = list(dict.fromkeys(ids))
+
+                if last_page_detected is None:
+                    try:
+                        last_page_detected = extract_last_page_number(soup, url, channel)
+                    except Exception:
+                        last_page_detected = None
+
                 if ids:
-                    return ids
+                    return ids, last_page_detected
                 if json_ids:
-                    return list(sorted(json_ids))
+                    return list(sorted(json_ids)), last_page_detected
                 try:
                     self._page.evaluate("window.scrollBy(0, 1200)")
                 except Exception:
@@ -718,7 +797,7 @@ class BackupConfig:
     channel: str
     category: str
     start_page: int
-    end_page: int
+    end_page: Optional[int]
     out_dir: Path
     sleep: float
 
@@ -735,6 +814,8 @@ class BackupResult:
     duration: float
     started_at: float
     finished_at: float
+    end_page: Optional[int]
+    auto_last_page: bool
 
 
 def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None) -> BackupResult:
@@ -751,6 +832,8 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
 
     started_at = time.time()
     session = requests.Session()
+    storage_state_path = env_str("PLAYWRIGHT_STORAGE_STATE", "")
+    _load_cookies_to_session(session, storage_state_path)
     manifest: List[Dict] = []
     errors: List[str] = []
     posts_saved = 0
@@ -759,24 +842,40 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
     pages_processed = 0
     page_listings: List[Dict[str, Any]] = []
     all_ids: List[int] = []
+    auto_last_page = config.end_page is None
+    effective_end_page = config.end_page if config.end_page is not None else config.start_page
+    resolved_end_page: Optional[int] = config.end_page
+    last_listing_page = config.start_page - 1
+    end_page_label = effective_end_page if not auto_last_page else "자동 탐색"
 
     def should_stop() -> bool:
         return bool(stop_event) and stop_event.is_set()
 
     config.out_dir.mkdir(parents=True, exist_ok=True)
-    log_progress(f"백업 시작: {config.channel} (페이지 {config.start_page}~{config.end_page})")
+    log_progress(f"백업 시작: {config.channel} (페이지 {config.start_page}~{end_page_label})")
+    if auto_last_page:
+        log_progress("마지막 페이지가 비어 있어 자동으로 탐색합니다.")
 
     # 1) Listing 수집 단계
-    for page in range(config.start_page, config.end_page + 1):
+    page = config.start_page
+    consecutive_no_results = 0
+
+    while True:
+        if not auto_last_page and page > effective_end_page:
+            break
+        if auto_last_page and resolved_end_page is not None and page > resolved_end_page:
+            break
         if should_stop():
             log_progress("중지 요청을 감지했습니다. 목록 수집을 중단합니다.")
             break
+        last_listing_page = page
         pages_processed += 1
         log_progress(f"목록 수집 중: {page}페이지...")
         playwright_error: Optional[Exception] = None
         ids: List[int] = []
+        detected_last_page: Optional[int] = None
 
-        def collect_ids(target_category: str) -> List[int]:
+        def collect_ids(target_category: str) -> Tuple[List[int], Optional[int]]:
             def job():
                 client = PlaywrightListingClient(
                     headless=env_bool("PLAYWRIGHT_HEADLESS", True),
@@ -794,17 +893,25 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
             return _run_playwright_job(job)
 
         try:
-            ids = collect_ids(config.category)
+            ids, detected_last_page = collect_ids(config.category)
         except Exception as exc:  # pragma: no cover - network-dependent
             playwright_error = exc
             logger.warning("[page %s] playwright listing 실패: %s", page, playwright_error)
 
+        if auto_last_page and detected_last_page:
+            if resolved_end_page is None or detected_last_page > resolved_end_page:
+                resolved_end_page = detected_last_page
+                if detected_last_page > effective_end_page:
+                    effective_end_page = detected_last_page
+                log_progress(f"마지막 페이지 감지: {detected_last_page}페이지 (범위 확장)")
+
         listing_error: Optional[Exception] = None
         detail = ""
         if not ids:
-            listing_error = RuntimeError("목록에서 글 ID를 발견할 수 없습니다.")
+            if playwright_error is not None or not auto_last_page:
+                listing_error = RuntimeError("목록에서 글 ID를 발견할 수 없습니다.")
 
-        if not ids:
+        if not ids and (playwright_error is not None or listing_error is not None):
             detail_parts = []
             if playwright_error is not None:
                 detail_parts.append(f"playwright: {playwright_error}")
@@ -831,7 +938,26 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
 
         if ids:
             all_ids.extend(ids)
+            consecutive_no_results = 0
+        else:
+            consecutive_no_results += 1
+
+        if auto_last_page and not ids and not detail:
+            stop_page = page - 1 if page > config.start_page else page
+            resolved_end_page = stop_page
+            log_progress(f"게시글이 없는 페이지를 확인했습니다. {stop_page}페이지에서 목록 수집을 종료합니다.")
+            break
+
+        if auto_last_page and not ids and detail and consecutive_no_results >= 3:
+            resolved_end_page = page - 1 if page > config.start_page else page
+            log_progress("3개 연속 페이지에서 글을 찾지 못해 목록 수집을 중단합니다.")
+            break
+
+        page += 1
         time.sleep(config.sleep)
+
+    if resolved_end_page is None:
+        resolved_end_page = last_listing_page if last_listing_page >= config.start_page else config.end_page
 
     # listing 결과 저장
     with open(config.out_dir / "_listing.json", "w", encoding="utf-8") as handle:
@@ -906,7 +1032,10 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                 log_progress(f"[{idx}/{total_ids}] [{aid}] 매니페스트에는 있으나 결과물 파일이 없습니다. 다시 크롤링합니다.")
 
         log_progress(f"[{idx}/{total_ids}] [{aid}] 크롤링 중...")
+        fetch_ms = img_ms = vid_ms = poster_ms = rewrite_ms = 0.0
+        post_start = time.perf_counter()
         try:
+            fetch_start = time.perf_counter()
             def fetch_job():
                 client = PlaywrightArticleClient(
                     headless=env_bool("PLAYWRIGHT_HEADLESS", True),
@@ -917,6 +1046,7 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                 finally:
                     client.close()
             article = _run_playwright_job(fetch_job)
+            fetch_ms = (time.perf_counter() - fetch_start) * 1000
         except Exception as exc:  # pragma: no cover - depends on upstream API
             err_msg = f"[{aid}] 글 조회 실패: {exc}"
             log_progress(err_msg, level=logging.ERROR)
@@ -967,10 +1097,32 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                     video_poster_map[v_full] = urljoin(post_url, poster)
 
         if image_urls and not should_stop():
-            # 최대 동시 다운로드 수를 제한하여 과도한 연결을 방지
-            max_workers = min(8, max(2, len(image_urls)))
+            img_start = time.perf_counter()
+            max_workers = 1
 
             def download_one(target_url: str):
+                base_delay = 0.5
+                for attempt in range(3):
+                    try:
+                        data_url = download_as_data_url(
+                            target_url,
+                            referer=post_url,
+                            session=session,
+                        )
+                        return target_url, data_url
+                    except requests.HTTPError as exc:
+                        status = exc.response.status_code if exc.response is not None else None
+                        if status == 429:
+                            wait = base_delay * (2 ** attempt)
+                            time.sleep(wait)
+                            continue
+                        raise
+                    except Exception:
+                        if attempt < 2:
+                            time.sleep(base_delay * (2 ** attempt))
+                            continue
+                        raise
+                # 마지막 실패 시 예외 전파
                 data_url = download_as_data_url(target_url, referer=post_url, session=session)
                 return target_url, data_url
 
@@ -985,9 +1137,15 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                         url_to_local[url] = data_url
                         images_downloaded += 1
                     except Exception as exc:  # pragma: no cover - network-dependent
-                        errors.append(f"[{aid}] 이미지 다운로드 실패: {futures[future]} ({exc})")
+                        err_msg = f"[{aid}] 이미지 다운로드 실패: {futures[future]} ({exc})"
+                        errors.append(err_msg)
+                        log_progress(err_msg, level=logging.WARNING)
+                    # per-download throttle to avoid bursts
+                    time.sleep(0.5)
+            img_ms = (time.perf_counter() - img_start) * 1000
 
         if video_urls and not should_stop():
+            vid_start = time.perf_counter()
             max_workers = min(3, max(1, len(video_urls)))
             videos_dir = post_dir / "videos"
 
@@ -996,43 +1154,72 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                     "User-Agent": DEFAULT_USER_AGENT,
                     "Referer": post_url,
                 }
-                response = session.get(target_url, headers=headers, stream=True, timeout=60)
-                response.raise_for_status()
-                content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                base_delay = 0.5
+                temp_path = None
+                for attempt in range(3):
+                    try:
+                        response = session.get(target_url, headers=headers, stream=True, timeout=60)
+                        response.raise_for_status()
+                        content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
 
-                parsed = urlparse(target_url)
-                name = Path(parsed.path).name or "video"
-                safe_name = safe_filename(name) or "video"
+                        parsed = urlparse(target_url)
+                        name = Path(parsed.path).name or "video"
+                        safe_name = safe_filename(name) or "video"
 
-                guessed_ext = None
-                if content_type:
-                    ext_from_type = mimetypes.guess_extension(content_type)
-                    if ext_from_type:
-                        guessed_ext = ext_from_type
-                if not guessed_ext:
-                    guessed_ext = Path(safe_name).suffix
+                        guessed_ext = None
+                        if content_type:
+                            ext_from_type = mimetypes.guess_extension(content_type)
+                            if ext_from_type:
+                                guessed_ext = ext_from_type
+                        if not guessed_ext:
+                            guessed_ext = Path(safe_name).suffix
 
-                is_video_type = content_type.startswith("video/") or any(
-                    (guessed_ext or "").lower().endswith(ext) for ext in VIDEO_EXTS
-                )
+                        is_video_type = content_type.startswith("video/") or any(
+                            (guessed_ext or "").lower().endswith(ext) for ext in VIDEO_EXTS
+                        )
 
-                if not is_video_type:
-                    # Treat as image/gif fallback
-                    if not guessed_ext:
-                        guessed_ext = ".gif"
-                    safe_name = Path(safe_name).stem + guessed_ext
-                else:
-                    if not any(safe_name.lower().endswith(ext) for ext in VIDEO_EXTS):
-                        safe_name = f"{Path(safe_name).stem}.mp4"
+                        if not is_video_type:
+                            # Treat as image/gif/webp fallback
+                            if not guessed_ext:
+                                guessed_ext = ".gif"
+                            safe_name = Path(safe_name).stem + guessed_ext
+                        else:
+                            if not any(safe_name.lower().endswith(ext) for ext in VIDEO_EXTS):
+                                safe_name = f"{Path(safe_name).stem}.mp4"
 
-                dest = videos_dir / safe_name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with open(dest, "wb") as handle:
-                    for chunk in response.iter_content(chunk_size=1024 * 512):
-                        if chunk:
-                            handle.write(chunk)
-
-                return target_url, dest.name, not is_video_type
+                        dest = videos_dir / safe_name
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        temp_path = dest.with_suffix(dest.suffix + ".part")
+                        with open(temp_path, "wb") as handle:
+                            for chunk in response.iter_content(chunk_size=1024 * 512):
+                                if chunk:
+                                    handle.write(chunk)
+                        # atomic rename
+                        temp_path.replace(dest)
+                        return target_url, dest.name, not is_video_type
+                    except requests.HTTPError as exc:
+                        status = exc.response.status_code if exc.response is not None else None
+                        if status == 429:
+                            wait = base_delay * (2 ** attempt)
+                            time.sleep(wait)
+                            continue
+                        if attempt < 2:
+                            time.sleep(base_delay * (2 ** attempt))
+                            continue
+                        raise
+                    except Exception:
+                        # cleanup partial
+                        try:
+                            if temp_path and temp_path.exists():
+                                temp_path.unlink()
+                        except Exception:
+                            pass
+                        if attempt < 2:
+                            time.sleep(base_delay * (2 ** attempt))
+                            continue
+                        raise
+                # if somehow not returned, raise
+                raise RuntimeError("video download failed after retries")
 
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {pool.submit(download_video, url): url for url in video_urls}
@@ -1046,9 +1233,15 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                         video_fallback_image[url] = is_image_fallback
                         videos_downloaded += 1
                     except Exception as exc:  # pragma: no cover - network-dependent
-                        errors.append(f"[{aid}] 비디오 다운로드 실패: {futures[future]} ({exc})")
+                        err_msg = f"[{aid}] 비디오 다운로드 실패: {futures[future]} ({exc})"
+                        errors.append(err_msg)
+                        log_progress(err_msg, level=logging.WARNING)
+                    # per-download throttle to avoid bursts
+                    time.sleep(0.3)
+            vid_ms = (time.perf_counter() - vid_start) * 1000
 
         if video_poster_map and not should_stop():
+            poster_start = time.perf_counter()
             posters_dir = post_dir / "videos"
 
             def download_poster(target_url: str):
@@ -1093,13 +1286,19 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                         video_src_for_poster = futures[future]
                         poster_to_local[video_src_for_poster] = f"videos/{local_name}"
                     except Exception as exc:  # pragma: no cover - network-dependent
-                        errors.append(f"[{aid}] 비디오 포스터 다운로드 실패: {futures[future]} ({exc})")
+                        err_msg = f"[{aid}] 비디오 포스터 다운로드 실패: {futures[future]} ({exc})"
+                        errors.append(err_msg)
+                        log_progress(err_msg, level=logging.WARNING)
+                    # per-download throttle to avoid bursts
+                    time.sleep(0.3)
+            poster_ms = (time.perf_counter() - poster_start) * 1000
 
         if should_stop():
             log_progress("중지 요청을 감지했습니다. 게시물 저장을 중단합니다.")
             break
 
         rewritten = ""
+        rewrite_start = time.perf_counter()
         if content_html:
             soup = BeautifulSoup(content_html, "lxml")
             
@@ -1185,6 +1384,8 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         with open(post_dir / "index.html", "w", encoding="utf-8") as handle:
             handle.write(offline_html)
 
+        rewrite_ms = (time.perf_counter() - rewrite_start) * 1000
+
         manifest.append(
             {
                 "id": aid,
@@ -1197,6 +1398,10 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                 "downloaded_videos": len(video_to_local),
                 "video_fallback_images": sum(1 for v in video_urls if video_fallback_image.get(v)),
             }
+        )
+        total_ms = (time.perf_counter() - post_start) * 1000
+        log_progress(
+            f"[{aid}] timings fetch={fetch_ms:.0f}ms img={img_ms:.0f}ms vid={vid_ms:.0f}ms poster={poster_ms:.0f}ms save={rewrite_ms:.0f}ms total={total_ms:.0f}ms"
         )
         posts_saved += 1
         if should_stop():
@@ -1212,7 +1417,8 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         "channel": config.channel,
         "category": config.category,
         "start_page": config.start_page,
-        "end_page": config.end_page,
+        "end_page": resolved_end_page,
+        "auto_last_page": auto_last_page,
         "sleep": config.sleep,
         "started_at": started_at,
         "finished_at": finished_at,
@@ -1241,4 +1447,6 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         duration=finished_at - started_at,
         started_at=started_at,
         finished_at=finished_at,
+        end_page=resolved_end_page,
+        auto_last_page=auto_last_page,
     )
