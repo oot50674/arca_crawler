@@ -682,7 +682,7 @@ class BackupResult:
     finished_at: float
 
 
-def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult:
+def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None) -> BackupResult:
     def log_progress(msg: str, level=logging.INFO):
         if level == logging.ERROR:
             logger.error(msg)
@@ -704,11 +704,17 @@ def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult
     page_listings: List[Dict[str, Any]] = []
     all_ids: List[int] = []
 
+    def should_stop() -> bool:
+        return bool(stop_event) and stop_event.is_set()
+
     config.out_dir.mkdir(parents=True, exist_ok=True)
     log_progress(f"백업 시작: {config.channel} (페이지 {config.start_page}~{config.end_page})")
 
     # 1) Listing 수집 단계
     for page in range(config.start_page, config.end_page + 1):
+        if should_stop():
+            log_progress("중지 요청을 감지했습니다. 목록 수집을 중단합니다.")
+            break
         pages_processed += 1
         log_progress(f"목록 수집 중: {page}페이지...")
         playwright_error: Optional[Exception] = None
@@ -825,7 +831,13 @@ def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult
             except Exception:
                 continue
 
+    if should_stop():
+        log_progress("중지 요청을 감지했습니다. 본문 크롤링을 건너뜁니다.")
+
     for idx, aid in enumerate(all_ids, 1):
+        if should_stop():
+            log_progress("중지 요청을 감지했습니다. 남은 게시물 처리를 중단합니다.")
+            break
         if aid in existing_posts:
             item = existing_posts[aid]
             # 실제 폴더와 최종 결과물(index.html)이 존재하는지 한 번 더 확인
@@ -877,7 +889,7 @@ def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult
         image_urls = extract_image_urls(content_html, base_url=post_url)
         url_to_local: Dict[str, str] = {}
 
-        if image_urls:
+        if image_urls and not should_stop():
             # 최대 동시 다운로드 수를 제한하여 과도한 연결을 방지
             max_workers = min(8, max(2, len(image_urls)))
 
@@ -888,12 +900,19 @@ def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {pool.submit(download_one, url): url for url in image_urls}
                 for future in futures:
+                    if should_stop():
+                        log_progress("중지 요청을 감지했습니다. 이미지 다운로드를 중단합니다.")
+                        break
                     try:
                         url, data_url = future.result()
                         url_to_local[url] = data_url
                         images_downloaded += 1
                     except Exception as exc:  # pragma: no cover - network-dependent
                         errors.append(f"[{aid}] 이미지 다운로드 실패: {futures[future]} ({exc})")
+
+        if should_stop():
+            log_progress("중지 요청을 감지했습니다. 게시물 저장을 중단합니다.")
+            break
 
         rewritten = ""
         if content_html:
@@ -952,6 +971,9 @@ def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult
             }
         )
         posts_saved += 1
+        if should_stop():
+            log_progress("중지 요청을 감지했습니다. 이후 게시물 처리를 중단합니다.")
+            break
         time.sleep(config.sleep)
 
     with open(config.out_dir / "_manifest.json", "w", encoding="utf-8") as handle:
@@ -974,7 +996,10 @@ def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult
     with open(config.out_dir / "_run.json", "w", encoding="utf-8") as handle:
         json.dump(run_meta, handle, ensure_ascii=False, indent=2)
 
-    log_progress(f"백업 완료: 총 {posts_saved}개 저장됨.")
+    if should_stop():
+        log_progress(f"백업 중단됨: 현재까지 {posts_saved}개 저장, {images_downloaded}개 이미지 다운로드.")
+    else:
+        log_progress(f"백업 완료: 총 {posts_saved}개 저장됨.")
 
     return BackupResult(
         manifest=manifest,

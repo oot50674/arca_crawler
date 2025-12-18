@@ -17,7 +17,7 @@
     </section>
 
     <section id="form-section" class="section form-section grid gap-6">
-        <article id="config-card" class="config-card bg-white border border-slate-200 rounded-lg px-6 py-5 md:px-7 md:py-6" x-data='{"outName": "", "root": {{ backup_root|tojson }} }'>
+        <article id="config-card" class="config-card bg-white border border-slate-200 rounded-lg px-6 py-5 md:px-7 md:py-6" x-data='{"outName": {{ active_params.out_name|tojson }}, "root": {{ backup_root|tojson }} }'>
             <div id="config-header" class="config-header mb-4 flex items-start justify-between gap-3">
                 <div>
                     <p class="text-xs font-semibold text-emerald-700 uppercase tracking-[0.2em]">Crawler 설정</p>
@@ -28,11 +28,11 @@
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <label class="flex flex-col gap-1 text-sm text-slate-700" for="input-channel">
                         <span class="font-semibold">채널 ID</span>
-                        <input id="input-channel" name="channel" type="text" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="" placeholder="예: 3d3d" required>
+                        <input id="input-channel" name="channel" type="text" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.channel }}" placeholder="예: 3d3d" required>
                     </label>
                     <label class="flex flex-col gap-1 text-sm text-slate-700" for="input-category">
                         <span class="font-semibold">카테고리</span>
-                        <input id="input-category" name="category" type="text" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="" placeholder="미입력=전체 (예: 전체)">
+                        <input id="input-category" name="category" type="text" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.category }}" placeholder="미입력=전체 (예: 전체)">
                         <span class="text-xs text-slate-500">채널에 없는 카테고리를 넣으면 글이 없을 수 있습니다.</span>
                     </label>
                 </div>
@@ -40,28 +40,28 @@
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <label class="flex flex-col gap-1 text-sm text-slate-700" for="input-start-page">
                         <span class="font-semibold">시작 페이지</span>
-                        <input id="input-start-page" name="start_page" type="number" min="1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="" required>
+                        <input id="input-start-page" name="start_page" type="number" min="1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.start_page }}" required>
                     </label>
                     <label class="flex flex-col gap-1 text-sm text-slate-700" for="input-end-page">
                         <span class="font-semibold">마지막 페이지</span>
-                        <input id="input-end-page" name="end_page" type="number" min="1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="" required>
+                        <input id="input-end-page" name="end_page" type="number" min="1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.end_page }}" required>
                     </label>
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <label class="flex flex-col gap-1 text-sm text-slate-700" for="input-sleep">
                         <span class="font-semibold">요청 간 대기(초)</span>
-                        <input id="input-sleep" name="sleep" type="number" min="0" step="0.1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="0.8">
+                        <input id="input-sleep" name="sleep" type="number" min="0" step="0.1" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.sleep }}">
                         <span class="text-xs text-slate-500">짧게 줄이면 속도↑, 너무 낮으면 차단 위험</span>
                     </label>
                     <label class="flex flex-col gap-1 text-sm text-slate-700" for="input-out-name">
                         <span class="font-semibold">출력 폴더명</span>
-                        <input id="input-out-name" name="out_name" type="text" x-model="outName" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="" placeholder="지정하지 않으면 채널/카테고리 기반으로 생성">
+                        <input id="input-out-name" name="out_name" type="text" x-model="outName" class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200" value="{{ active_params.out_name }}" placeholder="지정하지 않으면 채널/카테고리 기반으로 생성">
                         <span class="text-xs text-slate-500">풀 경로: <span class="font-mono text-emerald-700" x-text="`${root}/${outName || '...'}`"></span></span>
                     </label>
                 </div>
 
-                <div class="flex items-center justify-between gap-3 pt-2">
+                <div class="flex items-center justify-end gap-3 pt-2">
                     <button id="submit-button" type="submit" hx-disable="true" class="inline-flex items-center gap-2 rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700">
                         <span>백업 시작</span>
                         <span aria-hidden="true">→</span>
@@ -77,9 +77,14 @@
                     </div>
                 </div>
                 <div id="run-result" class="run-result px-4 py-4 text-sm text-slate-700">
-                    <div id="run-result-placeholder" class="rounded-md border border-dashed border-slate-200 bg-slate-50 px-4 py-4">
-                        <p>옵션을 입력하고 "백업 시작"을 누르면 이 영역이 결과로 갱신됩니다.</p>
-                    </div>
+                    {% if active_job %}
+                        {% set params = active_params_qs %}
+                        {% include 'partials/sse_container.html' %}
+                    {% else %}
+                        <div id="run-result-placeholder" class="rounded-md border border-dashed border-slate-200 bg-slate-50 px-4 py-4">
+                            <p>옵션을 입력하고 "백업 시작"을 누르면 이 영역이 결과로 갱신됩니다.</p>
+                        </div>
+                    {% endif %}
                 </div>
                 <div id="run-indicator" class="run-indicator htmx-indicator hidden border-t border-slate-200 px-4 py-3 text-sm text-emerald-700 bg-emerald-50">
                     <div class="flex items-center gap-2">
