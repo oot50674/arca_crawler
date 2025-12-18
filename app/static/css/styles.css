@@ -1,0 +1,59 @@
+:root {
+  --page-bg: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --accent: #0f766e;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--page-bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: var(--accent);
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+#site-header {
+  background: #fff;
+}
+
+#site-main {
+  padding-top: 28px;
+  padding-bottom: 44px;
+}
+
+@media (min-width: 1024px) {
+  #site-main {
+    padding-top: 36px;
+    padding-bottom: 56px;
+  }
+}
+
+.section {
+  border-color: var(--border);
+}
+
+.run-history {
+  border-color: var(--border);
+}
+
+.run-indicator {
+  display: none;
+}
+
+.run-indicator.htmx-request {
+  display: block;
+}

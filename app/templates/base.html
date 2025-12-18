@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="color-scheme" content="light">
+    <title>Arca Crawler</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.svg') }}">
+
+    <script src="https://unpkg.com/htmx.org@1.9.10" integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <script src="{{ url_for('static', filename='js/scripts.js') }}"></script>
+</head>
+<body class="bg-white min-h-screen font-sans text-slate-900">
+    <div id="page-shell" class="min-h-screen flex flex-col">
+        <header id="site-header" class="site-header bg-white border-b border-slate-200">
+            <div id="header-bar" class="container mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+                <div id="brand-block" class="flex items-center gap-3">
+                    <div id="brand-text" class="flex flex-col">
+                        <span class="text-lg font-bold">Arca Crawler</span>
+                    </div>
+                </div>
+                <nav id="header-nav" class="flex items-center gap-3 text-sm font-semibold text-slate-700">
+                    <a id="nav-intro" href="#intro-section" class="px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors">소개</a>
+                    <a id="nav-form" href="#form-section" class="px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors">설정</a>
+                    <a id="nav-history" href="#history-section" class="px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors">백업 기록</a>
+                </nav>
+            </div>
+        </header>
+
+        <main id="site-main" class="site-main container mx-auto max-w-6xl px-4 py-10 flex-1">
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer id="site-footer" class="site-footer border-t border-slate-200 py-5 text-center text-sm text-slate-500">
+            <div id="footer-content" class="container mx-auto max-w-6xl px-4">
+                아카라이브 채널을 오프라인으로 백업하는 간단한 UI입니다.
+            </div>
+        </footer>
+    </div>
+</body>
+</html>

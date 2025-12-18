@@ -1,0 +1,30 @@
+{
+  "name": "filesync-web-ui",
+  "version": "1.0.0",
+  "description": "<img width=\"2552\" height=\"1361\" alt=\"image\" src=\"https://github.com/user-attachments/assets/f647ce9d-9307-45b3-9ab6-06fa2a4b2e24\" />",
+  "main": "index.js",
+  "directories": {
+    "doc": "doc"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "tailwindcss -i ./src/input.css -o ./app/static/css/tailwind.css --watch",
+    "build": "tailwindcss -i ./src/input.css -o ./app/static/css/tailwind.css --minify"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oot50674/Filesync-Web-UI.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/oot50674/Filesync-Web-UI/issues"
+  },
+  "homepage": "https://github.com/oot50674/Filesync-Web-UI#readme",
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.17",
+    "tailwindcss": "^4.1.18"
+  }
+}

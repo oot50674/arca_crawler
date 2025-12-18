@@ -1,0 +1,11 @@
+/.venv
+/venv
+/database.db
+/AGENTS.md
+**/__pycache__/
+/logs/
+/node_modules
+/.env
+/.github/copilot-instructions.md
+/backups/
+/playwright_debug/
