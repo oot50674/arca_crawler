@@ -681,7 +681,18 @@ class BackupResult:
     finished_at: float
 
 
-def backup_channel(config: BackupConfig) -> BackupResult:
+def backup_channel(config: BackupConfig, progress_callback=None) -> BackupResult:
+    def log_progress(msg: str, level=logging.INFO):
+        if level == logging.ERROR:
+            logger.error(msg)
+        elif level == logging.WARNING:
+            logger.warning(msg)
+        else:
+            logger.info(msg)
+        
+        if progress_callback:
+            progress_callback(msg)
+
     started_at = time.time()
     session = requests.Session()
     manifest: List[Dict] = []
@@ -693,25 +704,31 @@ def backup_channel(config: BackupConfig) -> BackupResult:
     all_ids: List[int] = []
 
     config.out_dir.mkdir(parents=True, exist_ok=True)
+    log_progress(f"백업 시작: {config.channel} (페이지 {config.start_page}~{config.end_page})")
 
     # 1) Listing 수집 단계
     for page in range(config.start_page, config.end_page + 1):
         pages_processed += 1
+        log_progress(f"목록 수집 중: {page}페이지...")
         playwright_error: Optional[Exception] = None
         ids: List[int] = []
 
         def collect_ids(target_category: str) -> List[int]:
-            return _run_playwright_job(
-                lambda: PlaywrightListingClient(
+            def job():
+                client = PlaywrightListingClient(
                     headless=env_bool("PLAYWRIGHT_HEADLESS", True),
                     storage_state=env_str("PLAYWRIGHT_STORAGE_STATE", ""),
-                ).collect_article_ids(
-                    channel=config.channel,
-                    category=target_category,
-                    page=page,
-                    debug_dir=config.out_dir / "_debug" / "listing",
                 )
-            )
+                try:
+                    return client.collect_article_ids(
+                        channel=config.channel,
+                        category=target_category,
+                        page=page,
+                        debug_dir=config.out_dir / "_debug" / "listing",
+                    )
+                finally:
+                    client.close()
+            return _run_playwright_job(job)
 
         try:
             ids = collect_ids(config.category)
@@ -759,6 +776,8 @@ def backup_channel(config: BackupConfig) -> BackupResult:
 
     # 2) 본문 크롤링 단계
     all_ids = list(dict.fromkeys(all_ids))
+    total_ids = len(all_ids)
+    log_progress(f"본문 크롤링 시작 (총 {total_ids}개)...")
 
     # 기존 manifest 로드 (중복 스킵용)
     existing_posts = {}
@@ -773,38 +792,77 @@ def backup_channel(config: BackupConfig) -> BackupResult:
                         if aid_val:
                             existing_posts[aid_val] = item
         except Exception as exc:
-            logger.warning("기존 manifest 로드 실패: %s", exc)
+            log_progress(f"기존 manifest 로드 실패: {exc}", level=logging.WARNING)
 
-    for aid in all_ids:
+    # 매니페스트에 없더라도 실제 폴더가 존재하는지 스캔 (Fallback)
+    for p in config.out_dir.iterdir():
+        if not p.is_dir():
+            continue
+        # 폴더명이 {aid}_{title} 형식이므로 aid 추출 시도
+        name_parts = p.name.split("_", 1)
+        if not name_parts[0].isdigit():
+            continue
+        
+        aid_val = int(name_parts[0])
+        if aid_val in existing_posts:
+            continue
+            
+        # index.html과 post.json이 모두 있어야 완료된 것으로 간주
+        if (p / "index.html").exists() and (p / "post.json").exists():
+            try:
+                with open(p / "post.json", "r", encoding="utf-8") as h:
+                    post_data = json.load(h)
+                
+                existing_posts[aid_val] = {
+                    "id": aid_val,
+                    "title": post_data.get("title", p.name),
+                    "url": post_data.get("url", ""),
+                    "dir": p.name,
+                    "images": 0, # 정확한 숫자는 알 수 없으나 스킵에는 지장 없음
+                    "downloaded_images": 0,
+                }
+            except Exception:
+                continue
+
+    for idx, aid in enumerate(all_ids, 1):
         if aid in existing_posts:
             item = existing_posts[aid]
             # 실제 폴더와 최종 결과물(index.html)이 존재하는지 한 번 더 확인
             target_dir = config.out_dir / item.get("dir", "")
             if (target_dir / "index.html").exists():
-                logger.info("[%s] 이미 크롤링 완료된 게시물입니다. 스킵합니다.", aid)
+                log_progress(f"[{idx}/{total_ids}] [{aid}] 이미 완료된 게시물입니다. 스킵합니다.")
                 manifest.append(item)
                 continue
             else:
-                logger.info("[%s] 매니페스트에는 있으나 결과물 파일이 없습니다. 다시 크롤링합니다.", aid)
+                log_progress(f"[{idx}/{total_ids}] [{aid}] 매니페스트에는 있으나 결과물 파일이 없습니다. 다시 크롤링합니다.")
 
+        log_progress(f"[{idx}/{total_ids}] [{aid}] 크롤링 중...")
         try:
-            article = _run_playwright_job(
-                lambda: PlaywrightArticleClient(
+            def fetch_job():
+                client = PlaywrightArticleClient(
                     headless=env_bool("PLAYWRIGHT_HEADLESS", True),
                     storage_state=env_str("PLAYWRIGHT_STORAGE_STATE", ""),
-                ).fetch_article(config.channel, aid)
-            )
+                )
+                try:
+                    return client.fetch_article(config.channel, aid)
+                finally:
+                    client.close()
+            article = _run_playwright_job(fetch_job)
         except Exception as exc:  # pragma: no cover - depends on upstream API
-            errors.append(f"[{aid}] 글 조회 실패: {exc}")
+            err_msg = f"[{aid}] 글 조회 실패: {exc}"
+            log_progress(err_msg, level=logging.ERROR)
+            errors.append(err_msg)
             time.sleep(config.sleep)
             continue
 
         if article.get("is_notice"):
+            log_progress(f"[{aid}] 공지 글이라 스킵했습니다.")
             errors.append(f"[{aid}] 공지 글이라 스킵했습니다.")
             time.sleep(config.sleep)
             continue
 
         title = article.get("title") or f"post_{aid}"
+        log_progress(f"[{aid}] 저장 중: {title[:30]}...")
         content_html = article.get("content") or ""
         post_url = article.get("url") or build_article_url(config.channel, aid)
         author = article.get("author") or ""
@@ -904,6 +962,8 @@ def backup_channel(config: BackupConfig) -> BackupResult:
     }
     with open(config.out_dir / "_run.json", "w", encoding="utf-8") as handle:
         json.dump(run_meta, handle, ensure_ascii=False, indent=2)
+
+    log_progress(f"백업 완료: 총 {posts_saved}개 저장됨.")
 
     return BackupResult(
         manifest=manifest,

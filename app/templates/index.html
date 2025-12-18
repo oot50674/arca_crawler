@@ -129,7 +129,7 @@
                 <option value="{{ category }}"></option>
             {% endfor %}
         </datalist>
-        <div id="run-history" class="run-history rounded-lg border border-slate-200 overflow-hidden">
+        <div id="run-history" class="run-history rounded-lg border border-slate-200 overflow-hidden" hx-get="/backups/list" hx-trigger="refresh-runs from:body">
             {% include 'partials/run_list.html' %}
         </div>
     </section>

@@ -1,0 +1,13 @@
+<div id="sse-log-container" hx-ext="sse" sse-connect="/backup/run_sse?{{ params }}" sse-swap="message" hx-swap="beforeend" class="bg-slate-900 text-slate-300 font-mono text-xs p-4 rounded-md max-h-96 overflow-y-auto flex flex-col gap-1">
+    <div class="text-emerald-400 animate-pulse mb-2">연결 중...</div>
+</div>
+
+<script>
+    (function() {
+        const container = document.getElementById('sse-log-container');
+        const observer = new MutationObserver(() => {
+            container.scrollTop = container.scrollHeight;
+        });
+        observer.observe(container, { childList: true });
+    })();
+</script>

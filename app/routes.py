@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from flask import Blueprint, current_app, render_template, request
+from flask import Blueprint, current_app, render_template, request, Response, stream_with_context
 import logging
 
 from .services.arca_backup import BackupConfig, backup_channel, safe_filename
@@ -134,10 +134,30 @@ def run_backup():
     category = (form.get("category") or "").strip()
     start_page = _parse_int(form.get("start_page"), 1, 1)
     end_page = _parse_int(form.get("end_page"), start_page, 1)
-    if end_page < start_page:
-        end_page = start_page
     sleep = _parse_float(form.get("sleep"), 0.8, minimum=0.0, maximum=5.0)
     out_name = (form.get("out_name") or "").strip()
+
+    from urllib.parse import urlencode
+    params = urlencode({
+        "channel": channel,
+        "category": category,
+        "start_page": start_page,
+        "end_page": end_page,
+        "sleep": sleep,
+        "out_name": out_name
+    })
+
+    return render_template('partials/sse_container.html', params=params)
+
+
+@main.route('/backup/run_sse')
+def run_backup_sse():
+    channel = (request.args.get("channel") or "").strip() or "3d3d"
+    category = (request.args.get("category") or "").strip()
+    start_page = _parse_int(request.args.get("start_page"), 1, 1)
+    end_page = _parse_int(request.args.get("end_page"), start_page, 1)
+    sleep = _parse_float(request.args.get("sleep"), 0.8, minimum=0.0, maximum=5.0)
+    out_name = (request.args.get("out_name") or "").strip()
 
     backup_root: Path = current_app.config['BACKUP_ROOT']
     out_dir = _build_out_dir(backup_root, out_name, channel, category)
@@ -151,31 +171,33 @@ def run_backup():
         sleep=sleep,
     )
 
-    current_app.logger.info(
-        "[backup] start channel=%s category=%s pages=%s-%s sleep=%.2f out=%s",
-        channel,
-        category or "(all)",
-        start_page,
-        end_page,
-        sleep,
-        out_dir,
-    )
-    result = backup_channel(config)
-    runs = _load_runs(backup_root)
-    channels, categories = _extract_filters(runs)
-    current_app.logger.info(
-        "[backup] done channel=%s category=%s posts=%s images=%s errors=%s",
-        channel,
-        category or "(all)",
-        result.posts_saved,
-        result.images_downloaded,
-        len(result.errors),
-    )
-    return render_template(
-        'partials/backup_result.html',
-        result=result,
-        runs=runs,
-        backup_root=str(backup_root),
-        channels=channels,
-        categories=categories,
-    )
+    @stream_with_context
+    def generate():
+        def callback(msg):
+            # SSE format: data: <content>\n\n
+            # We wrap it in a div for easy display
+            yield f"data: <div class='py-1 border-b border-gray-700 text-sm'>{msg}</div>\n\n"
+
+        try:
+            yield "data: <div class='font-bold text-blue-400'>[시스템] 백업 프로세스를 시작합니다...</div>\n\n"
+            result = backup_channel(config, progress_callback=callback)
+            
+            summary = f"""
+<div class='mt-4 p-3 bg-slate-800 rounded border border-emerald-900/50'>
+    <div class='font-bold text-emerald-400 mb-1'>[백업 완료 리포트]</div>
+    <div class='grid grid-cols-2 gap-x-4 gap-y-1 text-xs'>
+        <span class='text-slate-400'>저장된 게시글:</span> <span class='text-slate-200'>{result.posts_saved}개</span>
+        <span class='text-slate-400'>다운로드 이미지:</span> <span class='text-slate-200'>{result.images_downloaded}개</span>
+        <span class='text-slate-400'>소요 시간:</span> <span class='text-slate-200'>{result.duration:.1f}초</span>
+        <span class='text-slate-400'>발생 에러:</span> <span class='text-{"red-400" if result.errors else "slate-200"}'>{len(result.errors)}건</span>
+    </div>
+</div>
+"""
+            yield f"data: {summary.replace(chr(10), '')}\n\n"
+            yield "data: <div class='font-bold text-green-400 mt-2'>[시스템] 모든 작업이 완료되었습니다.</div>\n\n"
+            # Trigger a refresh of the run list on the client side
+            yield "data: <script>htmx.trigger('#run-history', 'refresh-runs')</script>\n\n"
+        except Exception as e:
+            yield f"data: <div class='font-bold text-red-400'>[오류] {str(e)}</div>\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')
