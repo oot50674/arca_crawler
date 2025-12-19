@@ -113,64 +113,26 @@ def _load_runs(base_root: Path):
                 items = candidate
 
         updated_at = datetime.fromtimestamp(manifest_path.stat().st_mtime)
+        settings_channel = (run_meta.get("channel") or "").strip()
+        settings_category = (run_meta.get("category") or "").strip()
+        settings = {
+            "channel": settings_channel,
+            "category": settings_category,
+            "start_page": run_meta.get("start_page"),
+            "end_page": run_meta.get("end_page"),
+            "sleep": run_meta.get("sleep"),
+            "out_name": manifest_path.parent.name,
+        }
         runs.append(
             {
                 "name": manifest_path.parent.name,
                 "path": str(manifest_path.parent),
                 "updated_at": updated_at,
-                "channel": (run_meta.get("channel") or "").strip() or None,
-                "category": (run_meta.get("category") or "").strip() or None,
+                "channel": settings_channel or None,
+                "category": settings_category or None,
                 "posts": len(items),
                 "images": sum(item.get("downloaded_images", 0) for item in items if isinstance(item, dict)),
-            }
-        )
-
-    runs.sort(key=lambda item: item["updated_at"], reverse=True)
-    return runs
-
-
-def _extract_filters(runs):
-    channels = sorted({run.get("channel") for run in runs if run.get("channel")})
-    categories = sorted({run.get("category") for run in runs if run.get("category")})
-    return channels, categories
-
-
-def _load_runs(base_root: Path):
-    runs = []
-    for manifest_path in base_root.glob("*/_manifest.json"):
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as handle:
-                manifest = json.load(handle)
-        except Exception:
-            continue
-
-        run_meta = {}
-        run_meta_path = manifest_path.parent / "_run.json"
-        if run_meta_path.exists():
-            try:
-                with open(run_meta_path, "r", encoding="utf-8") as handle:
-                    run_meta = json.load(handle) or {}
-            except Exception:
-                run_meta = {}
-
-        items = []
-        if isinstance(manifest, list):
-            items = manifest
-        elif isinstance(manifest, dict):
-            candidate = manifest.get("items") or manifest.get("manifest") or []
-            if isinstance(candidate, list):
-                items = candidate
-
-        updated_at = datetime.fromtimestamp(manifest_path.stat().st_mtime)
-        runs.append(
-            {
-                "name": manifest_path.parent.name,
-                "path": str(manifest_path.parent),
-                "updated_at": updated_at,
-                "channel": (run_meta.get("channel") or "").strip() or None,
-                "category": (run_meta.get("category") or "").strip() or None,
-                "posts": len(items),
-                "images": sum(item.get("downloaded_images", 0) for item in items if isinstance(item, dict)),
+                "settings": settings,
             }
         )
 

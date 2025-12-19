@@ -860,6 +860,22 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
     page = config.start_page
     consecutive_no_results = 0
 
+    # 기존 목록 로드 (증분 백업용)
+    existing_ids = set()
+    listing_path = config.out_dir / "_listing.json"
+    old_listings = []
+    if listing_path.exists():
+        try:
+            with open(listing_path, "r", encoding="utf-8") as f:
+                old_listings = json.load(f)
+                if isinstance(old_listings, list):
+                    for entry in old_listings:
+                        existing_ids.update(entry.get("ids", []))
+            if existing_ids:
+                log_progress(f"기존 목록에서 {len(existing_ids)}개의 게시글 ID를 로드했습니다. 증분 백업을 시도합니다.")
+        except Exception as exc:
+            logger.warning("기존 _listing.json 로드 실패: %s", exc)
+
     while True:
         if not auto_last_page and page > effective_end_page:
             break
@@ -897,6 +913,18 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         except Exception as exc:  # pragma: no cover - network-dependent
             playwright_error = exc
             logger.warning("[page %s] playwright listing 실패: %s", page, playwright_error)
+
+        # 증분 백업 체크
+        found_existing = False
+        if existing_ids and ids:
+            new_ids_in_page = [i for i in ids if i not in existing_ids]
+            if not new_ids_in_page:
+                log_progress("이미 백업된 게시글 지점에 도달했습니다. 목록 수집을 종료합니다.")
+                break
+            if len(new_ids_in_page) < len(ids):
+                log_progress(f"기존 게시글을 발견했습니다. {page}페이지에서 목록 수집을 종료합니다.")
+                ids = new_ids_in_page
+                found_existing = True
 
         if auto_last_page and detected_last_page:
             if resolved_end_page is None or detected_last_page > resolved_end_page:
@@ -942,6 +970,9 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         else:
             consecutive_no_results += 1
 
+        if found_existing:
+            break
+
         if auto_last_page and not ids and not detail:
             stop_page = page - 1 if page > config.start_page else page
             resolved_end_page = stop_page
@@ -960,8 +991,9 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         resolved_end_page = last_listing_page if last_listing_page >= config.start_page else config.end_page
 
     # listing 결과 저장
+    final_listings = page_listings + old_listings
     with open(config.out_dir / "_listing.json", "w", encoding="utf-8") as handle:
-        json.dump(page_listings, handle, ensure_ascii=False, indent=2)
+        json.dump(final_listings, handle, ensure_ascii=False, indent=2)
 
     # 2) 본문 크롤링 단계
     all_ids = list(dict.fromkeys(all_ids))
@@ -1417,7 +1449,8 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
         "channel": config.channel,
         "category": config.category,
         "start_page": config.start_page,
-        "end_page": resolved_end_page,
+        "end_page": config.end_page,
+        "resolved_end_page": resolved_end_page,
         "auto_last_page": auto_last_page,
         "sleep": config.sleep,
         "started_at": started_at,

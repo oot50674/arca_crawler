@@ -57,6 +57,19 @@
         const storageKey = 'arca_backup_settings';
         const fields = ['channel', 'category', 'start_page', 'end_page', 'sleep', 'out_name'];
 
+        function applySettings(settings) {
+            if (!settings || typeof settings !== 'object') return;
+            fields.forEach((name) => {
+                if (!(name in settings)) return;
+                const el = document.querySelector(`[name="${name}"]`);
+                if (!el) return;
+                const val = settings[name];
+                el.value = val === undefined || val === null ? '' : val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
         function loadSettings() {
             const raw = localStorage.getItem(storageKey);
             if (!raw) return;
@@ -64,7 +77,7 @@
                 const obj = JSON.parse(raw);
                 fields.forEach((name) => {
                     const val = obj[name];
-                    if (val !== undefined && val !== null && val !== '') {
+                    if (val !== undefined && val !== null) {
                         const el = document.querySelector(`[name="${name}"]`);
                         if (el) {
                             el.value = val;
@@ -99,6 +112,19 @@
 
         // load saved values once on start
         loadSettings();
+
+        document.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-action="apply-settings"]');
+            if (!btn) return;
+            const payload = btn.getAttribute('data-settings');
+            if (!payload) return;
+            try {
+                const parsed = JSON.parse(payload);
+                applySettings(parsed);
+            } catch (err) {
+                console.warn('설정 불러오기 실패', err);
+            }
+        });
 
         // Fallback: if htmx is unavailable, handle backup form submit with fetch
         if (window.htmx) {
