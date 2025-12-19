@@ -149,12 +149,12 @@ def _extract_filters(runs):
 @main.route('/')
 def index():
     defaults = {
-        "channel": "3d3d",
+        "channel": "",
         "category": "",
         "start_page": 1,
-        "end_page": 3,
+        "end_page": "",
         "sleep": 0.8,
-        "out_name": "arca_backup_3d3d",
+        "out_name": "",
     }
 
     with _job_state["lock"]:
