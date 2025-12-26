@@ -123,6 +123,30 @@ def _load_runs(base_root: Path):
             "sleep": run_meta.get("sleep"),
             "out_name": manifest_path.parent.name,
         }
+
+        # 실제 저장된 게시글 폴더 및 이미지 개수 계산
+        manifest_items = [item for item in items if isinstance(item, dict)]
+        manifest_images = sum(item.get("downloaded_images", 0) for item in manifest_items)
+        image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
+
+        total_posts = 0
+        scanned_images = 0
+        try:
+            for p in manifest_path.parent.iterdir():
+                if p.is_dir():
+                    # 폴더명이 {aid}_{title} 형식이므로 aid 추출 시도
+                    name_parts = p.name.split("_", 1)
+                    if name_parts[0].isdigit():
+                        total_posts += 1
+                        for f in p.rglob("*"):
+                            if f.is_file() and f.suffix.lower() in image_exts:
+                                scanned_images += 1
+        except Exception:
+            total_posts = len(manifest_items)
+            scanned_images = 0
+
+        total_images = max(manifest_images, scanned_images)
+
         runs.append(
             {
                 "name": manifest_path.parent.name,
@@ -130,8 +154,8 @@ def _load_runs(base_root: Path):
                 "updated_at": updated_at,
                 "channel": settings_channel or None,
                 "category": settings_category or None,
-                "posts": len(items),
-                "images": sum(item.get("downloaded_images", 0) for item in items if isinstance(item, dict)),
+                "posts": total_posts,
+                "images": total_images,
                 "settings": settings,
             }
         )

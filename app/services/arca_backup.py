@@ -834,7 +834,6 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
     session = requests.Session()
     storage_state_path = env_str("PLAYWRIGHT_STORAGE_STATE", "")
     _load_cookies_to_session(session, storage_state_path)
-    manifest: List[Dict] = []
     errors: List[str] = []
     posts_saved = 0
     images_downloaded = 0
@@ -1034,13 +1033,19 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
                 with open(p / "post.json", "r", encoding="utf-8") as h:
                     post_data = json.load(h)
                 
+                # 실제 폴더 내 이미지 개수 확인
+                img_count = 0
+                for f in p.iterdir():
+                    if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                        img_count += 1
+
                 existing_posts[aid_val] = {
                     "id": aid_val,
                     "title": post_data.get("title", p.name),
                     "url": post_data.get("url", ""),
                     "dir": p.name,
-                    "images": 0, # 정확한 숫자는 알 수 없으나 스킵에는 지장 없음
-                    "downloaded_images": 0,
+                    "images": img_count,
+                    "downloaded_images": img_count,
                 }
             except Exception:
                 continue
@@ -1048,17 +1053,19 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
     if should_stop():
         log_progress("중지 요청을 감지했습니다. 본문 크롤링을 건너뜁니다.")
 
+    # 누적 매니페스트를 위해 기존 항목으로 시작
+    manifest_map = {item["id"]: item for item in existing_posts.values() if "id" in item}
+
     for idx, aid in enumerate(all_ids, 1):
         if should_stop():
             log_progress("중지 요청을 감지했습니다. 남은 게시물 처리를 중단합니다.")
             break
-        if aid in existing_posts:
-            item = existing_posts[aid]
+        if aid in manifest_map:
+            item = manifest_map[aid]
             # 실제 폴더와 최종 결과물(index.html)이 존재하는지 한 번 더 확인
             target_dir = config.out_dir / item.get("dir", "")
             if (target_dir / "index.html").exists():
                 log_progress(f"[{idx}/{total_ids}] [{aid}] 이미 완료된 게시물입니다. 스킵합니다.")
-                manifest.append(item)
                 continue
             else:
                 log_progress(f"[{idx}/{total_ids}] [{aid}] 매니페스트에는 있으나 결과물 파일이 없습니다. 다시 크롤링합니다.")
@@ -1418,19 +1425,17 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
 
         rewrite_ms = (time.perf_counter() - rewrite_start) * 1000
 
-        manifest.append(
-            {
-                "id": aid,
-                "title": title,
-                "url": post_url,
-                "dir": post_dir.name,
-                "images": len(image_urls),
-                "downloaded_images": len(url_to_local),
-                "videos": len(video_urls),
-                "downloaded_videos": len(video_to_local),
-                "video_fallback_images": sum(1 for v in video_urls if video_fallback_image.get(v)),
-            }
-        )
+        manifest_map[aid] = {
+            "id": aid,
+            "title": title,
+            "url": post_url,
+            "dir": post_dir.name,
+            "images": len(image_urls),
+            "downloaded_images": len(url_to_local),
+            "videos": len(video_urls),
+            "downloaded_videos": len(video_to_local),
+            "video_fallback_images": sum(1 for v in video_urls if video_fallback_image.get(v)),
+        }
         total_ms = (time.perf_counter() - post_start) * 1000
         log_progress(
             f"[{aid}] timings fetch={fetch_ms:.0f}ms img={img_ms:.0f}ms vid={vid_ms:.0f}ms poster={poster_ms:.0f}ms save={rewrite_ms:.0f}ms total={total_ms:.0f}ms"
@@ -1441,6 +1446,7 @@ def backup_channel(config: BackupConfig, progress_callback=None, stop_event=None
             break
         time.sleep(config.sleep)
 
+    manifest = list(manifest_map.values())
     with open(config.out_dir / "_manifest.json", "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
 
